@@ -12,8 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path"
-	"path/filepath"
+	// "path"
+	// "path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -124,6 +124,9 @@ func main() {
 
 			syscall.Dup2(int(stdout.Fd()), 1)
 			syscall.Dup2(int(stdout.Fd()), 2)
+
+			// rorate log file if size > 100MB
+			go statLogFile()
 		}
 	} else {
 		stdout, _ = os.OpenFile("/dev/null", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
@@ -132,10 +135,10 @@ func main() {
 		syscall.Dup2(int(stdout.Fd()), 2)
 	}
 
-	m, _ := filepath.Glob(*cfg_logfile + "*")
-	for _, v := range m {
-		llog.Debugf("glob name: %v", path.Base(v))
-	}
+	// m, _ := filepath.Glob(*cfg_logfile + "*")
+	// for _, v := range m {
+	// 	llog.Debugf("glob name: %v", path.Base(v))
+	// }
 	// llog.Debugf("glob: %v", m)
 
 	if true {
@@ -274,9 +277,20 @@ func daemon_mode() {
 }
 
 func logRotate() {
-	os.Rename(*cfg_logfile, *cfg_logfile+"-"+time.Now().Format("2006-01-02_15:04:05"))
+	os.Rename(*cfg_logfile, *cfg_logfile+"-"+time.Now().Format("2006-01-02_15:04"))
 	stdout.Close()
 	stdout, _ = os.OpenFile(*cfg_logfile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	syscall.Dup2(int(stdout.Fd()), 1)
 	syscall.Dup2(int(stdout.Fd()), 2)
+}
+
+// rotate log if file size > 100MB
+func statLogFile(file string) {
+	for {
+		time.Sleep(5 * time.Second)
+		fi, _ := os.Stat(file)
+		if fi.Size() > int64(100*1024*1024) {
+			logRotate()
+		}
+	}
 }
