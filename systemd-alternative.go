@@ -25,8 +25,6 @@ var cfg_socket = flag.String("s", "", "run app with -s app.sock")
 
 var cfg_logfile = flag.String("l", "", "to log output run with -l app.log or -l - to log to sdtout. by default - no std logging")
 
-// var cfg_daemon = flag.Bool("d", false, "-d=true")
-
 var restartDelay int
 
 var ps *pubsub.PubSub
@@ -49,33 +47,41 @@ func writter(c net.Conn) {
 		_, err := c.Write(msg.([]byte))
 		if err != nil {
 			llog.Debugf("write error: %v", err)
+			c.Close()
 			return
 		}
 	}
 }
 
 func reader(c net.Conn) {
+	defer c.Close()
 	for {
 		line, e := bufio.NewReader(c).ReadString('\n')
 		if e != nil {
 			if e != io.EOF {
-				llog.Debugf("reader error: %v", e)
-				return
+				llog.Debugf("reader error (break): %v", e)
+				break
 			} else {
 				line = ""
-				continue
+				llog.Debugf("reader error (break): empty line")
+				break
 			}
 		}
 		line = strings.TrimRight(line, "\n")
 
 		switch line {
 		case "kill":
+			exit = true
 			close(killch)
 			cmd.Process.Kill()
-			exit = true
 		case "restart":
 			close(killch)
 			cmd.Process.Kill()
+		case "subscribe-log":
+			go writter(c)
+		case "rotate-log":
+			logRotate()
+			return
 		}
 	}
 }
@@ -96,6 +102,8 @@ func init() {
 	daemon_mode()
 }
 
+var stdout *os.File
+
 func main() {
 
 	l_args := os.Args
@@ -110,28 +118,23 @@ func main() {
 		}
 	}
 
-	// llog.Debugf("%v", l_cmd)
-
-	// os.Exit(1)
-
 	if len(*cfg_logfile) > 0 {
 		if *cfg_logfile != "-" {
-			stdout, _ := os.OpenFile(*cfg_logfile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+			stdout, _ = os.OpenFile(*cfg_logfile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 
 			syscall.Dup2(int(stdout.Fd()), 1)
 			syscall.Dup2(int(stdout.Fd()), 2)
 		}
 	} else {
-		stdout, _ := os.OpenFile("/dev/null", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+		stdout, _ = os.OpenFile("/dev/null", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 
 		syscall.Dup2(int(stdout.Fd()), 1)
 		syscall.Dup2(int(stdout.Fd()), 2)
 	}
 
-	// llog.Debugf("listing %v", filepath.Base("/var/www/default/crashlog.log"))
 	m, _ := filepath.Glob(*cfg_logfile + "*")
 	for _, v := range m {
-		// llog.Debugf("glob name: %v", path.Base(v))
+		llog.Debugf("glob name: %v", path.Base(v))
 	}
 	// llog.Debugf("glob: %v", m)
 
@@ -147,8 +150,6 @@ func main() {
 	}
 
 	ps = pubsub.New(4)
-
-	// os.Remove("./ciaas.sock")
 
 	if len(*cfg_socket) > 0 {
 
@@ -172,21 +173,26 @@ func main() {
 					panic("error accept " + err.Error())
 				}
 				go reader(fd)
-				go writter(fd)
+				// go writter(fd)
 			}
 		}()
 
 	}
 
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
+	signal.Notify(c, os.Interrupt, syscall.SIGHUP)
 	go func() {
-		<-c
-		// sig is a ^C, handle it
-		close(killch)
-		cmd.Process.Kill()
-		exit = true
-		llog.Debugf("got ctrl+c. exiting...")
+		sic := <-c
+		// if sic == syscall.SIGHUP {
+		// 	logRotate()
+		// }
+		if sic == os.Interrupt {
+			// sig is a ^C, handle it
+			exit = true
+			close(killch)
+			cmd.Process.Kill()
+			llog.Debugf("got ctrl+c. exiting...")
+		}
 	}()
 
 	err_wr := Writer{t: "std-err"}
@@ -194,7 +200,6 @@ func main() {
 
 	for {
 		killch = make(chan struct{})
-		// cmd = exec.Command("./test.sh")
 		cmd = exec.Command(l_cmd[0], l_cmd[1:]...)
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -245,7 +250,7 @@ func log_sprintf(t string, msg []byte) []byte {
 	r := fmt.Sprintf(
 		"[%v] (%s) %s\n",
 		t,
-		time.Now().Format("2006/01/02-15:04:05"),
+		time.Now().Format("2006-01-02 15:04:05"),
 		msg,
 	)
 	return []byte(r)
@@ -268,10 +273,10 @@ func daemon_mode() {
 	}
 }
 
-
-/*
-app usage:
-main -s app.sock -- ./this.sh is your app with params
-socat - UNIX-CONNECT:app.sock        realtime stdout/stderror/log tracking
-commands to send: restart, kill
-*/
+func logRotate() {
+	os.Rename(*cfg_logfile, *cfg_logfile+"-"+time.Now().Format("2006-01-02_15:04:05"))
+	stdout.Close()
+	stdout, _ = os.OpenFile(*cfg_logfile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	syscall.Dup2(int(stdout.Fd()), 1)
+	syscall.Dup2(int(stdout.Fd()), 2)
+}
