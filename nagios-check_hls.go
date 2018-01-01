@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"github.com/grafov/m3u8"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -14,6 +13,8 @@ import (
 
 var blen int64 = 500000
 var httpClient http.Client
+var warnTime float64 = 1<<31 - 1
+var critTime float64 = 1 << 31
 
 func init() {
 	httpClient = http.Client{}
@@ -23,10 +24,13 @@ func init() {
 		eCritical("%v http://abc.tl/p/t/pl.m3u8", os.Args[0])
 		os.Exit(2)
 	}
-
 	if len(os.Args) > 2 {
 		num, _ := strconv.Atoi(os.Args[2])
 		blen = int64(num)
+	}
+	if len(os.Args) > 4 {
+		warnTime, _ = strconv.ParseFloat(os.Args[3], 10)
+		critTime, _ = strconv.ParseFloat(os.Args[4], 10)
 	}
 }
 
@@ -58,11 +62,24 @@ START:
 			if err != nil {
 				eCritical("panic step 3, error: %v", err)
 			}
-			_, err = ioutil.ReadAll(io.LimitReader(ts_response.Body, blen))
+			start := time.Now()
+			// if max content len is important
+			// _, err = ioutil.ReadAll(io.LimitReader(ts_response.Body, blen))
+			body, err := ioutil.ReadAll(ts_response.Body)
+			bodylen := len(body)
+			end := time.Now()
 			if err != nil {
 				eCritical("panic step 4, error: %v", err)
 			}
-			fmt.Printf("OK; downloaded %v bytes\n", blen)
+			diff := end.Sub(start).Seconds()
+			if diff > critTime {
+				eCritical("response time to high: %v", diff)
+			}
+			if diff > warnTime {
+				fmt.Printf("WARNING; response time to hight: %v\n", diff)
+				os.Exit(1)
+			}
+			fmt.Printf("OK; downloaded %v bytes in %v seconds\n", bodylen, diff)
 			os.Exit(0)
 		} else {
 			eCritical("found 0 segments")
