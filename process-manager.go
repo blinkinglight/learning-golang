@@ -55,7 +55,19 @@ func (p *Process) Stop() {
 
 type Processes []*Process
 
-func (ps *Processes) Add(p *Process) {
+func (ps *Processes) Add(path string) {
+	pid := 0
+	for _, proc := range *ps {
+		if proc.pid > pid {
+			pid = proc.pid
+		}
+	}
+	pid++
+	p := new(Process)
+	p.pid = pid
+	p.cmd = path
+	p.loop = true
+	go p.Start()
 	*ps = append(*ps, p)
 }
 
@@ -110,12 +122,7 @@ func main() {
 		if info.IsDir() {
 			return nil
 		}
-		p := new(Process)
-		p.pid = n
-		p.cmd = path
-		p.loop = true
-		go p.Start()
-		ps.Add(p)
+		ps.Add(path)
 		n++
 		return nil
 	})
@@ -149,12 +156,7 @@ func main() {
 				fmt.Println("File not found")
 				continue
 			}
-			p := new(Process)
-			p.pid = n
-			p.cmd = cmd[1]
-			p.loop = true
-			go p.Start()
-			ps.Add(p)
+			ps.Add(cmd[1])
 			n++
 
 		case "stop":
