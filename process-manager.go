@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 type Process struct {
@@ -36,8 +37,7 @@ func (p *Process) Start() {
 			p.rcmd.Wait()
 			p.running = false
 		} else {
-			p.loop = false
-			return
+			time.Sleep(1 * time.Second)
 		}
 	}
 }
@@ -59,6 +59,18 @@ func (ps *Processes) Add(p *Process) {
 	*ps = append(*ps, p)
 }
 
+func (ps *Processes) Remove(pid int) {
+	pss := Processes{}
+	for _, proc := range *ps {
+		if proc.pid != pid {
+			pss = append(pss, proc)
+		} else {
+			proc.Stop()
+		}
+	}
+	*ps = pss
+}
+
 func (ps *Processes) StopAll() {
 	for _, p := range *ps {
 		p.Stop()
@@ -77,6 +89,7 @@ func main() {
 		fmt.Printf("Directory doesnt exists: %v\n", os.Args[1])
 		os.Exit(1)
 	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			ps.StopAll()
@@ -84,9 +97,10 @@ func main() {
 	}()
 
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	signal.Notify(c, os.Interrupt, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGSTOP)
 	go func() {
 		<-c
+		signal.Stop(c)
 		ps.StopAll()
 		os.Exit(0)
 	}()
@@ -118,6 +132,31 @@ func main() {
 			for _, proc := range ps {
 				fmt.Printf("pid: %d, cmd: %v, running: %v\n", proc.pid, proc.cmd, proc.running)
 			}
+		case "remove":
+			if len(cmd) < 2 {
+				fmt.Println("usage: stop [pid]")
+				continue
+			}
+			pid, _ := strconv.Atoi(cmd[1])
+			ps.Remove(pid)
+		case "add":
+			if len(cmd) < 2 {
+				fmt.Println("usage: stop [pid]")
+				continue
+			}
+			_, err := os.Stat(cmd[1])
+			if os.IsNotExist(err) {
+				fmt.Println("File not found")
+				continue
+			}
+			p := new(Process)
+			p.pid = n
+			p.cmd = cmd[1]
+			p.loop = true
+			go p.Start()
+			ps.Add(p)
+			n++
+
 		case "stop":
 			if len(cmd) < 2 {
 				fmt.Println("usage: stop [pid]")
@@ -145,10 +184,16 @@ func main() {
 				fmt.Println("usage: restart [pid]")
 				continue
 			}
-			pid, _ := strconv.Atoi(cmd[1])
-			for _, proc := range ps {
-				if proc.pid == pid {
-					go proc.Restart()
+			if cmd[1] == "all" {
+				for _, proc := range ps {
+					proc.Restart()
+				}
+			} else {
+				pid, _ := strconv.Atoi(cmd[1])
+				for _, proc := range ps {
+					if proc.pid == pid {
+						go proc.Restart()
+					}
 				}
 			}
 		case "status":
