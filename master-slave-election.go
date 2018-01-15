@@ -1,7 +1,6 @@
-package main
+package mse
 
 import (
-	"flag"
 	"fmt"
 	"github.com/nats-io/go-nats"
 	"strconv"
@@ -20,79 +19,153 @@ func (n *Node) IsAlive() bool {
 }
 
 type As struct {
-	start   int64
-	name    string
-	master  bool
-	alive   bool
-	gotMsg  bool
-	msgTime int64
-	nodes   map[string]*Node
-	mu      sync.Mutex
+	start      int64
+	name       string
+	master     bool
+	alive      bool
+	gotMsg     bool
+	msgTime    int64
+	nodes      map[string]*Node
+	mu         sync.Mutex
+	masterName string
 }
 
 func (a *As) Set(name string, start int64) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	if _, ok := a.nodes[name]; !ok {
 		a.nodes[name] = new(Node)
-		a.nodes[name].Start = start
 	}
+	a.nodes[name].Start = start
 	a.nodes[name].Updated = time.Now().UnixNano()
-	a.mu.Unlock()
+
 }
 
 func (a *As) Update() {
 	if !a.IsAlive() {
 		return
 	}
-	start := as.start
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	start := as.start
+	masterName := as.name
 	for name, node := range a.nodes {
 		if node.IsAlive() {
 			if node.Start < start {
 				start = node.Start
+				masterName = name
 			}
-		} else {
-			delete(a.nodes, name)
 		}
 	}
-	a.mu.Unlock()
 	as.master = as.start <= start
+	as.masterName = masterName
+}
+
+func (a *As) SetSelfMaster() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	start := a.start
+	for _, node := range a.nodes {
+		if node.Start < start {
+			start = node.Start
+		}
+	}
+	if start < a.start {
+		as.start = start - 1
+	}
 }
 
 func (a *As) IsMaster() bool {
-	return as.master
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.master
 }
 
 func (a *As) IsSlave() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return !a.master
 }
 func (a *As) IsAlive() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.alive
 }
 
-var name = flag.String("n", "[noname]", "Service name")
-
 var as *As
 
-func main() {
-	flag.Parse()
+func IsMaster() bool {
+	return as.IsMaster()
+}
+
+func IsSlave() bool {
+	return as.IsSlave()
+}
+
+func IsAlive() bool {
+	return as.IsAlive()
+}
+
+func MasterName() string {
+	return as.masterName
+}
+
+func SetRPCChannel(name string) {
+	rpcChannel = name
+}
+
+func DoRCP(name string, data string, timeout int) (string, error) {
+	msg, err := cli.Request(name, []byte(data), time.Duration(timeout)*time.Millisecond)
+	if err != nil {
+		return "", err
+	}
+	return string(msg.Data), nil
+}
+
+var OnPC func(string, string)
+
+var rpcChannel string
+
+var cli *nats.Conn
+
+func Start(topic, name, natsServer string) {
+
 	as = new(As)
 	as.nodes = make(map[string]*Node)
 	start := time.Now().UnixNano()
 	as.start = start
-	as.name = *name
-
-	cli, e := nats.Connect("nats://127.0.0.1:4222")
+	as.name = name
+	var e error
+	cli, e = nats.Connect(natsServer)
 	if e != nil {
 		panic(e)
 	}
 	as.alive = cli.IsConnected()
 
+	if rpcChannel == "" {
+		rpcChannel = name + ".rpc"
+	}
+
+	cli.Subscribe(rpcChannel, func(msg *nats.Msg) {
+		data := string(msg.Data)
+		if data == "set-master" {
+			as.SetSelfMaster()
+		} else {
+			params := strings.SplitN(data, " ", 2)
+			if len(params) < 2 {
+				OnPC(params[0], "")
+			} else {
+				OnPC(params[0], params[1])
+			}
+			cli.Publish(msg.Reply, []byte("OK"))
+		}
+	})
 	go func() {
 		for {
-			cli.Publish("master-slave", []byte(fmt.Sprintf("%v %v %d", "alive", *name, start)))
+			as.mu.Lock()
+			cli.Publish(topic, []byte(fmt.Sprintf("%v %v %d", "alive", name, as.start)))
+			as.mu.Unlock()
 			as.alive = cli.IsConnected()
-			as.Set(*name, as.start)
 			time.Sleep(30 * time.Millisecond)
 		}
 	}()
@@ -109,19 +182,17 @@ func main() {
 		}
 	}()
 
-	cli.Subscribe("master-slave", func(msg *nats.Msg) {
-		m := strings.Split(string(msg.Data), " ")
-		if m[0] == "alive" && m[1] != *name {
-			as.gotMsg = true
-			as.msgTime = time.Now().UnixNano()
-			num, _ := strconv.Atoi(m[2])
-			as.Set(m[1], int64(num))
-		}
-	})
-
-	for {
-		fmt.Printf("%v\n", as.IsMaster())
-		time.Sleep(100 * time.Millisecond)
-	}
+	go func() {
+		cli.Subscribe(topic, func(msg *nats.Msg) {
+			m := strings.Split(string(msg.Data), " ")
+			if m[0] == "alive" && m[1] != name {
+				as.gotMsg = true
+				as.msgTime = time.Now().UnixNano()
+				num, _ := strconv.Atoi(m[2])
+				as.Set(m[1], int64(num))
+			}
+		})
+	}()
 
 }
+
