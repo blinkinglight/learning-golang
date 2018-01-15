@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/grafov/m3u8"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -63,9 +64,13 @@ START:
 				eCritical("panic step 3, error: %v", err)
 			}
 			start := time.Now()
+			var body []byte
 			// if max content len is important
-			// _, err = ioutil.ReadAll(io.LimitReader(ts_response.Body, blen))
-			body, err := ioutil.ReadAll(ts_response.Body)
+			if blen > 0 {
+				body, err = ioutil.ReadAll(io.LimitReader(ts_response.Body, blen))
+			} else {
+				body, err = ioutil.ReadAll(ts_response.Body)
+			}
 			bodylen := len(body)
 			end := time.Now()
 			if err != nil {
@@ -102,3 +107,7 @@ func eCritical(params ...interface{}) {
 	fmt.Printf("CRITICAL; "+params[0].(string)+"\n", params[1:]...)
 	os.Exit(2)
 }
+
+// usage: ./check_hsl http://dom/playlist.m3u8 0 2 4
+// 2 - > 2s warning response time, 4 = > 4s critical response time
+
