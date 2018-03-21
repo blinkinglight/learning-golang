@@ -2,14 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/asaskevich/govalidator"
-	"io/ioutil"
 	"log"
 	"net/http"
 )
 
 type Response struct {
 	Errors  map[string]string `json:"errors"`
+	Message string            `json:"message"`
 	Success bool              `json:"success"`
 }
 
@@ -23,30 +24,46 @@ func main() {
 
 		log.Printf("%v %v", r.Method, r.URL.String())
 
-		pb, _ := ioutil.ReadAll(r.Body)
 		var post Post
 
-		json.Unmarshal(pb, &post)
+		err := json.NewDecoder(r.Body).Decode(&post)
 
-		var response Response
+		if err != nil {
+			jsonResponse(w, false, err)
+			return
+		}
 
 		isValid, err := govalidator.ValidateStruct(post)
 
-		response.Errors = govalidator.ErrorsByField(err)
-		response.Success = isValid
-
-		b, _ := json.Marshal(response)
 		if !isValid {
-			w.WriteHeader(400)
-		} else {
-			// do something
-			// save to database
-			// send to mq something
-			// etc.
+			jsonResponse(w, false, err)
+			return
 		}
-		w.Write(b)
+
+		// do something
+		// save to database
+		// send to mq something
+		// etc.
+		jsonResponse(w, isValid, nil)
+		return
+
 	})
 
 	log.Fatal(http.ListenAndServe(":9090", nil))
 }
 
+func jsonResponse(w http.ResponseWriter, success bool, errors error) {
+	var response Response
+
+	if errors == nil {
+		errors = fmt.Errorf("")
+	}
+
+	response.Errors = govalidator.ErrorsByField(errors)
+	response.Message = errors.Error()
+	response.Success = success
+
+	b, _ := json.Marshal(response)
+
+	w.Write(b)
+}
