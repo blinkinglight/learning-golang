@@ -16,7 +16,7 @@ type Response struct {
 }
 
 type Post struct {
-	Title   string `valid:"required,ascii" json:"title"`
+	Title   string `valid:"required,ascii,length(2|10)" json:"title"`
 	Message string `valid:"required,ascii" json:"message"`
 }
 
@@ -35,6 +35,10 @@ func main() {
 
 func wrapper(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		if !checkToken(w, r) {
+			return
+		}
 
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -63,6 +67,23 @@ func jsonResponse(w http.ResponseWriter, success bool, errors error) {
 	b, _ := json.Marshal(response)
 
 	w.Write(b)
+}
+
+func checkToken(w http.ResponseWriter, r *http.Request) bool {
+	token := r.URL.Query().Get("token")
+
+	if r.Header.Get("X-Access-Token") != "" {
+		token = r.Header.Get("X-Access-Token")
+	}
+
+	//TODO: implement
+	if token == "morningstar" {
+		return true
+	}
+
+	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+
+	return false
 }
 
 // http handlers
