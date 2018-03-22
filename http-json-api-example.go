@@ -36,17 +36,15 @@ func main() {
 func wrapper(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-		if !checkToken(w, r) {
-			return
-		}
-
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Printf("panic: %v", r.URL.String())
 			}
 		}()
 
-		h.ServeHTTP(w, r)
+		if checkToken(w, r) {
+			h.ServeHTTP(w, r)
+		}
 
 		log.Printf("%v %v", r.Method, r.URL.String())
 
@@ -116,3 +114,5 @@ func hPostPosts(w http.ResponseWriter, r *http.Request) {
 	return
 
 }
+
+// MIT License
