@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/asaskevich/govalidator"
+	"github.com/gorilla/mux"
 	"log"
 	"net/http"
 )
@@ -20,36 +21,32 @@ type Post struct {
 }
 
 func main() {
-	http.HandleFunc("/v1/posts", func(w http.ResponseWriter, r *http.Request) {
+
+	r := mux.NewRouter()
+	pr := r.PathPrefix("/v1").Methods("POST", "PUT", "DELETE").Subrouter()
+	gr := r.PathPrefix("/v1").Methods("GET").Subrouter()
+
+	_ = gr
+
+	pr.HandleFunc("/posts", hPostPosts)
+
+	log.Fatal(http.ListenAndServe(":9090", wrapper(r)))
+}
+
+func wrapper(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("panic: %v", r.URL.String())
+			}
+		}()
+
+		h.ServeHTTP(w, r)
 
 		log.Printf("%v %v", r.Method, r.URL.String())
 
-		var post Post
-
-		err := json.NewDecoder(r.Body).Decode(&post)
-
-		if err != nil {
-			jsonResponse(w, false, err)
-			return
-		}
-
-		isValid, err := govalidator.ValidateStruct(post)
-
-		if !isValid {
-			jsonResponse(w, false, err)
-			return
-		}
-
-		// do something
-		// save to database
-		// send to mq something
-		// etc.
-		jsonResponse(w, isValid, nil)
-		return
-
 	})
-
-	log.Fatal(http.ListenAndServe(":9090", nil))
 }
 
 func jsonResponse(w http.ResponseWriter, success bool, errors error) {
@@ -66,4 +63,35 @@ func jsonResponse(w http.ResponseWriter, success bool, errors error) {
 	b, _ := json.Marshal(response)
 
 	w.Write(b)
+}
+
+// http handlers
+
+func hPostPosts(w http.ResponseWriter, r *http.Request) {
+
+	// log.Printf("%v %v", r.Method, r.URL.String())
+
+	var post Post
+
+	err := json.NewDecoder(r.Body).Decode(&post)
+
+	if err != nil {
+		jsonResponse(w, false, err)
+		return
+	}
+
+	isValid, err := govalidator.ValidateStruct(post)
+
+	if !isValid {
+		jsonResponse(w, false, err)
+		return
+	}
+
+	// do something
+	// save to database
+	// send to mq something
+	// etc.
+	jsonResponse(w, true, nil)
+	return
+
 }
