@@ -48,6 +48,7 @@ func (mb T) Stop(name string) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 	mb.m[name].cf()
+	mb.m[name].run = false
 }
 
 var mb T
@@ -98,7 +99,6 @@ func Start(name string) {
 			select {
 			case <-mb.GetContext(name).Done():
 				log.Printf("context done")
-				return
 			case <-time.After(1 * time.Second):
 				log.Println("do job.", name)
 			case m := <-ch:
@@ -107,4 +107,3 @@ func Start(name string) {
 		}
 	}()
 }
-
