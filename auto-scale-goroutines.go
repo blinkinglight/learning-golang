@@ -47,8 +47,8 @@ func (mb T) GetContext(name string) context.Context {
 func (mb T) Stop(name string) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
-	mb.m[name].cf()
 	mb.m[name].run = false
+	mb.m[name].cf()
 }
 
 var mb T
