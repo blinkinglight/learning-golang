@@ -16,19 +16,13 @@ type S struct {
 
 type T struct {
 	m  map[string]*S
-	mu sync.RWMutex
+	mu *sync.RWMutex
 }
 
 func (mb T) Get(name string) bool {
 	mb.mu.RLock()
 	defer mb.mu.RUnlock()
 	return mb.m[name].run
-}
-
-func (mb *T) Set(name string, b bool) {
-	mb.mu.Lock()
-	defer mb.mu.Unlock()
-	mb.m[name].run = b
 }
 
 func (mb *T) Create(name string) {
@@ -47,8 +41,17 @@ func (mb T) GetContext(name string) context.Context {
 func (mb T) Stop(name string) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
+	if _, ok := mb.m[name]; !ok {
+		return
+	}
 	mb.m[name].run = false
 	mb.m[name].cf()
+}
+
+func (mb T) Remove(name string) {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	delete(mb.m, name)
 }
 
 var mb T
@@ -57,6 +60,8 @@ var ch chan string
 
 func main() {
 	mb.m = make(map[string]*S)
+	mb.mu = &sync.RWMutex{}
+
 	ch = make(chan string)
 
 	Start("first")
@@ -74,9 +79,9 @@ func main() {
 			time.Sleep(1 * time.Second)
 		}
 	}()
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 	Start("second")
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 	Stop("first")
 	Stop("second")
 
@@ -92,9 +97,12 @@ func Start(name string) {
 	mb.Create(name)
 
 	go func() {
+		log.Println("Starting", name)
 		defer func() {
-			log.Println("quiting...")
+			mb.Remove(name)
+			log.Printf("%v quiting...", name)
 		}()
+
 		for mb.Get(name) {
 			select {
 			case <-mb.GetContext(name).Done():
