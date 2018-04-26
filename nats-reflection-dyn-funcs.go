@@ -131,7 +131,9 @@ func (t *T) call(s string) {
 	for i := 0; i < funcArgs-1; i++ {
 		v[i] = reflect.ValueOf(pw(&s))
 	}
-	v[funcArgs-1] = reflect.ValueOf(s)
+	if funcArgs > 0 {
+      v[funcArgs-1] = reflect.ValueOf(s)
+    }
 	funcValue.Call(v)
 }
 
