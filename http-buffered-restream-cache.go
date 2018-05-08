@@ -80,27 +80,15 @@ func (t *T) Read() chan []byte {
 			close(ch)
 		}()
 		for {
-			if t.eof == true {
-				pos := atomic.LoadInt32(&t.cnt)
-				for pos > num {
-					select {
-					case ch <- fn():
-					case <-time.After(time.Second):
-						return
-					}
-					num++
+
+			pos := atomic.LoadInt32(&t.cnt)
+			for pos > num {
+				select {
+				case ch <- fn():
+				case <-time.After(time.Second):
+					return
 				}
-			}
-			for t.eof == false {
-				pos := atomic.LoadInt32(&t.cnt)
-				for pos > num {
-					select {
-					case ch <- fn():
-					case <-time.After(time.Second):
-						return
-					}
-					num++
-				}
+				num++
 			}
 			if t.eof == true && atomic.LoadInt32(&t.cnt) == num {
 				return
