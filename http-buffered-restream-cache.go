@@ -21,13 +21,8 @@ func main() {
 		t.Done()
 	}()
 
-	http.HandleFunc("/out", func(w http.ResponseWriter, r *http.Request) {
-		for b := range t.Read() {
-			_, e := w.Write(b)
-			if e != nil {
-				return
-			}
-		}
+	http.HandleFunc("/out.iso", func(w http.ResponseWriter, r *http.Request) {
+		t.WriteTo(w)
 	})
 
 	http.ListenAndServe(":9002", nil)
@@ -46,7 +41,6 @@ func New() *T {
 type T struct {
 	d   [][]byte
 	cnt int32
-	dc  chan []byte
 	eof bool
 	mu  *sync.RWMutex
 }
@@ -55,8 +49,13 @@ func (t *T) Done() {
 	t.eof = true
 }
 
-func (t *T) EOF() {
-	t.eof = true
+func (t *T) WriteTo(w io.Writer) {
+	for b := range t.Read() {
+		_, e := w.Write(b)
+		if e != nil {
+			return
+		}
+	}
 }
 
 func (t *T) Read() chan []byte {
