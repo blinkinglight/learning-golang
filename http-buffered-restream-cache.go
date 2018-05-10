@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"runtime"
@@ -33,6 +34,7 @@ func main() {
 func New() *T {
 	t := new(T)
 	t.d = [][]byte{}
+	t.dc = make(chan struct{})
 	t.mu = &sync.RWMutex{}
 	return t
 }
@@ -40,16 +42,22 @@ func New() *T {
 type T struct {
 	d   [][]byte
 	cnt int32
+	dc  chan struct{}
 	eof bool
 	mu  *sync.RWMutex
 }
 
 func (t *T) Done() {
 	t.eof = true
+	close(t.dc)
 }
 
 func (t *T) WriteTo(w io.Writer) {
-	for b := range t.Read() {
+	ch, cfn := t.Read()
+	defer func() {
+		cfn()
+	}()
+	for b := range ch {
 		_, e := w.Write(b)
 		if e != nil {
 			return
@@ -57,7 +65,7 @@ func (t *T) WriteTo(w io.Writer) {
 	}
 }
 
-func (t *T) Read() chan []byte {
+func (t *T) Read() (chan []byte, context.CancelFunc) {
 	ch := make(chan []byte)
 	var num int32 = 0
 	fln := func() int {
@@ -68,6 +76,7 @@ func (t *T) Read() chan []byte {
 	for fln() == 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
+	ctx, cfn := context.WithCancel(context.TODO())
 	fn := func() []byte {
 		t.mu.RLock()
 		defer t.mu.RUnlock()
@@ -83,7 +92,7 @@ func (t *T) Read() chan []byte {
 			for pos > num {
 				select {
 				case ch <- fn():
-				case <-time.After(time.Second):
+				case <-ctx.Done():
 					return
 				}
 				num++
@@ -91,11 +100,13 @@ func (t *T) Read() chan []byte {
 			if t.eof == true && atomic.LoadInt32(&t.cnt) == num {
 				return
 			}
-			time.Sleep(10 * time.Millisecond)
+			if t.eof == false {
+				<-t.dc
+			}
 		}
 
 	}()
-	return ch
+	return ch, cfn
 }
 
 func (t *T) Write(chunk []byte) (n int, err error) {
@@ -103,6 +114,9 @@ func (t *T) Write(chunk []byte) (n int, err error) {
 	t.d = append(t.d, chunk)
 	t.mu.Unlock()
 	atomic.AddInt32(&t.cnt, 1)
+
+	close(t.dc)
+	t.dc = make(chan struct{})
 
 	return len(chunk), nil
 }
