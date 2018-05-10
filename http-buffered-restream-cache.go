@@ -33,7 +33,6 @@ func main() {
 func New() *T {
 	t := new(T)
 	t.d = [][]byte{}
-	t.dc = make(chan []byte)
 	t.mu = &sync.RWMutex{}
 	return t
 }
