@@ -1,5 +1,9 @@
 package main
 
+/*
+	go run main.go -d db1.db -ns nats://192.168.100.50
+	use "publish(string) method to binlog your message or write your own"
+*/
 import (
 	"encoding/binary"
 	"encoding/json"
@@ -38,8 +42,19 @@ var lastID []byte
 func main() {
 
 	flag.Parse()
+	var err error
 
-	pmq, _ = nats.Connect(*natsServer)
+	pmq, err = nats.Connect(*natsServer)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	go func() {
+		for {
+			pmq.Publish("auto-discovery", []byte(masterTopic))
+			time.Sleep(time.Second)
+		}
+	}()
 
 	db, _ = bolt.Open(*dbFile, 0755, nil)
 
@@ -113,15 +128,19 @@ func main() {
 
 	go func() {
 		for {
-			m := BinLog{time.Now().UnixNano(), "Your binlog message here"}
-			b, _ := json.Marshal(m)
-
-			pmq.Publish(masterTopic, b)
+			publish("Your binlog message")
 			time.Sleep(time.Second)
 		}
 	}()
 
 	runtime.Goexit()
+}
+
+func publish(msg string) {
+	m := BinLog{time.Now().UnixNano(), msg}
+	b, _ := json.Marshal(m)
+
+	pmq.Publish(masterTopic, b)
 }
 
 func binlogWritter(msg *nats.Msg) {
