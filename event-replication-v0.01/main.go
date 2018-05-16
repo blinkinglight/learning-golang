@@ -37,14 +37,16 @@ func init() {
 }
 
 var db *bolt.DB
-var lastID []byte
+var lastID string
 
 func main() {
 
 	flag.Parse()
 	var err error
 
-	pmq, err = nats.Connect(*natsServer)
+	pmq, err = nats.Connect(*natsServer, nats.DisconnectHandler(func(nc *nats.Conn) {
+		panic("Disconnected")
+	}))
 	if err != nil {
 		panic(err.Error())
 	}
@@ -67,11 +69,9 @@ func main() {
 		b := tx.Bucket([]byte("binlog"))
 		c := b.Cursor()
 		_, v := c.Last()
-		if v == nil {
-			// TODO: flag to set time
-			v = itob(0)
-		}
-		lastID = v
+
+		lastID = fmt.Sprintf("%s", v)
+
 		return nil
 	})
 
@@ -90,6 +90,8 @@ func main() {
 
 		var m BinLog
 		json.Unmarshal([]byte(args[1]), &m)
+
+		// fmt.Printf("%s\n", args)
 
 		db.View(func(tx *bolt.Tx) error {
 			b := tx.Bucket([]byte("binlog"))
@@ -122,7 +124,8 @@ func main() {
 		time.Sleep(time.Second)
 		if masterOfMasters != "" {
 			println("request replay from: replay-" + masterOfMasters)
-			pmq.Publish("replay-request-"+masterOfMasters, []byte(fmt.Sprintf("%s %s", masterTopic, lastID)))
+			msg := fmt.Sprintf("%s %s", masterTopic, lastID)
+			pmq.Publish("replay-request-"+masterOfMasters, []byte(msg))
 		}
 	}()
 
@@ -156,6 +159,7 @@ func binlogWritter(msg *nats.Msg) {
 	db.Update(func(tx *bolt.Tx) error {
 		b, _ := tx.CreateBucketIfNotExists([]byte("binlog"))
 		b.Put(itob(m.MsgID), msg.Data)
+
 		return nil
 	})
 
