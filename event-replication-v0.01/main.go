@@ -44,6 +44,8 @@ func init() {
 var db *bolt.DB
 var lastID string
 
+var masterq []string
+
 func main() {
 
 	flag.Parse()
@@ -120,8 +122,13 @@ func main() {
 	pmq.Subscribe("new-master", func(msg *nats.Msg) {
 		// println("new-master")
 		pmq.Subscribe(string(msg.Data), binlogWritter)
-		if string(msg.Data) != masterTopic && replicationState == false {
-			pmq.Publish("master-"+string(msg.Data), []byte(masterTopic))
+		if string(msg.Data) != masterTopic {
+			// TODO: ir repl enqueue msg
+			if replicationState == true {
+				masterq = append(masterq, "master-"+string(msg.Data))
+			} else {
+				pmq.Publish("master-"+string(msg.Data), []byte(masterTopic))
+			}
 		}
 	})
 
@@ -138,8 +145,12 @@ func main() {
 	go func() {
 		for {
 			time.Sleep(time.Second)
-			if time.Duration(time.Now().UnixNano()-lastReplEvent)/time.Second > 5 {
+			if time.Duration(time.Now().UnixNano()-lastReplEvent)/time.Second > 1 {
 				replicationState = false
+				for _, v := range masterq {
+					pmq.Publish(v, []byte(masterTopic))
+				}
+				masterq = nil
 				return
 			}
 		}
