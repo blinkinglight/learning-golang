@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/boltdb/bolt"
+	// gnatsd "github.com/nats-io/gnatsd/server"
 	"github.com/nats-io/go-nats"
 	"github.com/nats-io/nuid"
 	"runtime"
@@ -31,6 +32,9 @@ var masterOfMasters string
 var dbFile = flag.String("d", "a.db", "-d a.db")
 var natsServer = flag.String("ns", "nats://127.0.0.1:4222", "-ns nats://127.0.0.1:4222,nats://127.0.0.2:4222")
 var gtid []byte
+
+var replicationState bool = true
+var lastReplEvent int64 = time.Now().UnixNano()
 
 func init() {
 	masterTopic = nuid.New().Next()
@@ -116,7 +120,7 @@ func main() {
 	pmq.Subscribe("new-master", func(msg *nats.Msg) {
 		// println("new-master")
 		pmq.Subscribe(string(msg.Data), binlogWritter)
-		if string(msg.Data) != masterTopic {
+		if string(msg.Data) != masterTopic && replicationState == false {
 			pmq.Publish("master-"+string(msg.Data), []byte(masterTopic))
 		}
 	})
@@ -128,6 +132,16 @@ func main() {
 			println("request replay from: replay-" + masterOfMasters)
 			msg := fmt.Sprintf("%s %s", masterTopic, lastID)
 			pmq.Publish("replay-request-"+masterOfMasters, []byte(msg))
+		}
+	}()
+
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			if time.Duration(time.Now().UnixNano()-lastReplEvent)/time.Second > 5 {
+				replicationState = false
+				return
+			}
 		}
 	}()
 
@@ -174,6 +188,8 @@ func binlogWritter2(msg *nats.Msg) {
 	json.Unmarshal(msg.Data, &m)
 
 	if bytes.Compare(gtid, itob(m.MsgID)) >= 0 {
+		replicationState = true
+		lastReplEvent = time.Now().UnixNano()
 		pmq.Publish("play-"+masterTopic, msg.Data)
 	}
 
