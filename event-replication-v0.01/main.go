@@ -36,6 +36,8 @@ var gtid []byte
 var replicationState bool = true
 var lastReplEvent int64 = time.Now().UnixNano()
 
+var firstMsg bool
+
 func init() {
 	masterTopic = nuid.New().Next()
 	gtid = itob(time.Now().UnixNano())
@@ -83,7 +85,12 @@ func main() {
 	})
 
 	pmq.Subscribe("play-"+masterTopic, func(msg *nats.Msg) {
-
+		if firstMsg == false {
+			var m BinLog
+			json.Unmarshal(msg.Data, &m)
+			gtid = itob(m.MsgID)
+			firstMsg = true
+		}
 		// process message here
 		// write to db or do your async action
 		// download missing file or do something else with message
@@ -202,10 +209,7 @@ func binlogWritter2(msg *nats.Msg) {
 		replicationState = true
 		lastReplEvent = time.Now().UnixNano()
 		pmq.Publish("play-"+masterTopic, msg.Data)
-	} else {
-		replicationState = false
 	}
-
 	// fmt.Printf("syncing %v\n", m)
 
 	db.Update(func(tx *bolt.Tx) error {
