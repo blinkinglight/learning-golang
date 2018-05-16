@@ -25,9 +25,11 @@ var masterOfMasters string
 
 var dbFile = flag.String("d", "a.db", "-d a.db")
 var natsServer = flag.String("ns", "nats://127.0.0.1:4222", "-ns nats://127.0.0.1:4222,nats://127.0.0.2:4222")
+var gtid []byte
 
 func init() {
 	masterTopic = nuid.New().Next()
+	gtid = itob(time.Now().UnixNano())
 }
 
 var db *bolt.DB
@@ -51,10 +53,21 @@ func main() {
 		c := b.Cursor()
 		_, v := c.Last()
 		if v == nil {
+			// TODO: flag to set time
 			v = itob(0)
 		}
 		lastID = v
 		return nil
+	})
+
+	pmq.Subscribe("play-"+masterTopic, func(msg *nats.Msg) {
+
+		// process message here
+		// write to db or do your async action
+		// download missing file or do something else with message
+
+		println("playing: " + string(msg.Data))
+
 	})
 
 	pmq.Subscribe("replay-request-"+masterTopic, func(msg *nats.Msg) {
@@ -113,11 +126,13 @@ func main() {
 
 func binlogWritter(msg *nats.Msg) {
 
+	pmq.Publish("play-"+masterTopic, msg.Data)
+
 	var m BinLog
 
 	json.Unmarshal(msg.Data, &m)
 
-	fmt.Printf("%v\n", m)
+	// fmt.Printf("%v\n", m)
 
 	db.Update(func(tx *bolt.Tx) error {
 		b, _ := tx.CreateBucketIfNotExists([]byte("binlog"))
@@ -129,11 +144,13 @@ func binlogWritter(msg *nats.Msg) {
 
 func binlogWritter2(msg *nats.Msg) {
 
+	pmq.Publish("play-"+masterTopic, msg.Data)
+
 	var m BinLog
 
 	json.Unmarshal(msg.Data, &m)
 
-	fmt.Printf("syncing %v\n", m)
+	// fmt.Printf("syncing %v\n", m)
 
 	db.Update(func(tx *bolt.Tx) error {
 		b, _ := tx.CreateBucketIfNotExists([]byte("binlog"))
@@ -148,4 +165,3 @@ func itob(v int64) []byte {
 	binary.BigEndian.PutUint64(b, uint64(v))
 	return b
 }
-
