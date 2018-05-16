@@ -3,7 +3,9 @@ package main
 /*
 	go run main.go -d db1.db -ns nats://192.168.100.50
 	use "publish(string) method to binlog your message or write your own"
+
 */
+
 import (
 	"bytes"
 	"encoding/binary"
@@ -33,18 +35,19 @@ var dbFile = flag.String("d", "a.db", "-d a.db")
 var natsServer = flag.String("ns", "nats://127.0.0.1:4222", "-ns nats://127.0.0.1:4222,nats://127.0.0.2:4222")
 var gtid []byte
 
+var replicationFinished bool = false
 var replicationState bool = true
 var lastReplEvent int64 = time.Now().UnixNano()
 
 var firstMsg bool
 
 func init() {
-	masterTopic = nuid.New().Next()
 	gtid = itob(time.Now().UnixNano())
 }
 
 var db *bolt.DB
 var lastID string
+var lastMSG string
 
 var masterq []string
 
@@ -71,6 +74,20 @@ func main() {
 
 	db.Update(func(tx *bolt.Tx) error {
 		tx.CreateBucketIfNotExists([]byte("binlog"))
+		tx.CreateBucketIfNotExists([]byte("m"))
+		return nil
+	})
+
+	db.Update(func(tx *bolt.Tx) error {
+		bb := tx.Bucket([]byte("m"))
+		mt := bb.Get([]byte("masterTopic"))
+		fmt.Printf("doh: %s\n", mt)
+		if mt == nil {
+			masterTopic = nuid.New().Next()
+			bb.Put([]byte("masterTopic"), []byte(masterTopic))
+		} else {
+			masterTopic = string(mt)
+		}
 		return nil
 	})
 
@@ -83,6 +100,8 @@ func main() {
 
 		return nil
 	})
+
+	println("me: " + masterTopic)
 
 	pmq.Subscribe("play-"+masterTopic, func(msg *nats.Msg) {
 		if firstMsg == false {
@@ -106,12 +125,13 @@ func main() {
 		var m BinLog
 		json.Unmarshal([]byte(args[1]), &m)
 
-		// fmt.Printf("%s\n", args)
+		// fmt.Printf("requested reply: %s\n", args)
 
 		db.View(func(tx *bolt.Tx) error {
 			b := tx.Bucket([]byte("binlog"))
 			c := b.Cursor()
 			for k, v := c.Seek(itob(m.MsgID)); k != nil; k, v = c.Next() {
+				// time.Sleep(time.Second)
 				pmq.Publish("replay-"+args[0], v)
 			}
 			return nil
@@ -129,6 +149,7 @@ func main() {
 	pmq.Subscribe("new-master", func(msg *nats.Msg) {
 		// println("new-master")
 		pmq.Subscribe(string(msg.Data), binlogWritter)
+		// if not me
 		if string(msg.Data) != masterTopic {
 			// TODO: ir repl enqueue msg
 			if replicationState == true {
@@ -143,7 +164,7 @@ func main() {
 	go func() {
 		time.Sleep(time.Second)
 		if masterOfMasters != "" {
-			println("request replay from: replay-" + masterOfMasters)
+			// println("request replay from: replay-" + masterOfMasters)
 			msg := fmt.Sprintf("%s %s", masterTopic, lastID)
 			pmq.Publish("replay-request-"+masterOfMasters, []byte(msg))
 		}
@@ -152,13 +173,28 @@ func main() {
 	go func() {
 		for {
 			time.Sleep(time.Second)
-			if time.Duration(time.Now().UnixNano()-lastReplEvent)/time.Second > 3 || replicationState == false {
+			if time.Duration(time.Now().UnixNano()-lastReplEvent)/time.Second > 3 && replicationFinished == false {
+				if lastMSG == "" {
+					replicationFinished = true
+				}
+
+				if replicationFinished == false {
+					msg := fmt.Sprintf("%s %s", masterTopic, lastMSG)
+					lastReplEvent = time.Now().UnixNano()
+					// println("request replay again from: replay-" + masterOfMasters)
+					pmq.Publish("replay-request-"+masterOfMasters, []byte(msg))
+				}
+
+			}
+			if replicationFinished == true {
+				// if replicationFinished == true {
 				replicationState = false
 				for _, v := range masterq {
 					pmq.Publish(v, []byte(masterTopic))
 				}
 				masterq = nil
 				return
+				// }
 			}
 		}
 	}()
@@ -166,7 +202,7 @@ func main() {
 	go func() {
 		for {
 			publish("Your binlog message")
-			time.Sleep(time.Second)
+			time.Sleep(1000 * time.Millisecond)
 		}
 	}()
 
@@ -204,11 +240,17 @@ func binlogWritter2(msg *nats.Msg) {
 	var m BinLog
 
 	json.Unmarshal(msg.Data, &m)
+	lastMSG = fmt.Sprintf("%s", msg.Data)
 
-	if bytes.Compare(gtid, itob(m.MsgID)) >= 0 {
+	if bytes.Compare(gtid, itob(m.MsgID)) > 0 {
 		replicationState = true
+		replicationFinished = false
 		lastReplEvent = time.Now().UnixNano()
 		pmq.Publish("play-"+masterTopic, msg.Data)
+	}
+	if bytes.Compare(gtid, itob(m.MsgID)) == 0 {
+		replicationState = false
+		replicationFinished = true
 	}
 	// fmt.Printf("syncing %v\n", m)
 
