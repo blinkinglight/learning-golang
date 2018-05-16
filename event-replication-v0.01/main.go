@@ -5,6 +5,7 @@ package main
 	use "publish(string) method to binlog your message or write your own"
 */
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
@@ -81,6 +82,7 @@ func main() {
 		// write to db or do your async action
 		// download missing file or do something else with message
 
+		// json unmarsh gtid <= msg.id { done }
 		println("playing: " + string(msg.Data))
 
 	})
@@ -167,11 +169,13 @@ func binlogWritter(msg *nats.Msg) {
 
 func binlogWritter2(msg *nats.Msg) {
 
-	pmq.Publish("play-"+masterTopic, msg.Data)
-
 	var m BinLog
 
 	json.Unmarshal(msg.Data, &m)
+
+	if bytes.Compare(gtid, itob(m.MsgID)) >= 0 {
+		pmq.Publish("play-"+masterTopic, msg.Data)
+	}
 
 	// fmt.Printf("syncing %v\n", m)
 
