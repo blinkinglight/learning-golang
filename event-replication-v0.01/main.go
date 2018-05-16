@@ -145,7 +145,7 @@ func main() {
 	go func() {
 		for {
 			time.Sleep(time.Second)
-			if time.Duration(time.Now().UnixNano()-lastReplEvent)/time.Second > 1 {
+			if time.Duration(time.Now().UnixNano()-lastReplEvent)/time.Second > 3 || replicationState == false {
 				replicationState = false
 				for _, v := range masterq {
 					pmq.Publish(v, []byte(masterTopic))
@@ -202,6 +202,8 @@ func binlogWritter2(msg *nats.Msg) {
 		replicationState = true
 		lastReplEvent = time.Now().UnixNano()
 		pmq.Publish("play-"+masterTopic, msg.Data)
+	} else {
+		replicationState = false
 	}
 
 	// fmt.Printf("syncing %v\n", m)
