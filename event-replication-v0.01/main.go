@@ -28,6 +28,8 @@ type BinLog struct {
 	MsgID   int64
 	MsgData string
 
+	MsgParentID int64
+
 	MsgCat  int64
 	MsgProc string
 }
