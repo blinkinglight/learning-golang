@@ -3,6 +3,7 @@ package main
 /*
 	go run main.go -d db1.db -ns nats://192.168.100.50
 	use "publish(string) method to binlog your message or write your own"
+	use play(int64,int64) to play binlog from time to time
 
 */
 
@@ -217,13 +218,40 @@ func main() {
 		}
 	}()
 
+	// just for testing
+	go func() {
+		time.Sleep(5 * time.Second)
+		start := time.Now().UnixNano() - int64(10*time.Second)
+		end := time.Now().UnixNano()
+		ch := play(start, end)
+		for v := range ch {
+			fmt.Printf("manual play: %s\n", v)
+		}
+	}()
+
 	runtime.Goexit()
 }
 
 func publish(msg string) {
-	m := BinLog{time.Now().UnixNano(), msg, 0, ""}
+	m := BinLog{time.Now().UnixNano(), msg, 0, 0, ""}
 
 	pmq.Publish(masterTopic, m.encode())
+}
+
+func play(from, to int64) chan []byte {
+	ch := make(chan []byte)
+	go func() {
+		db.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte("binlog"))
+			c := b.Cursor()
+			for k, v := c.Seek(itob(from)); k != nil && bytes.Compare(k, itob(to)) < 0; k, v = c.Next() {
+				ch <- v
+			}
+			return nil
+		})
+		close(ch)
+	}()
+	return ch
 }
 
 func binlogWritter(msg *nats.Msg) {
