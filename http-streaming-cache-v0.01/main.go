@@ -14,6 +14,8 @@ func main() {
 
 	t := New()
 
+	// for testing only
+	// use lru or other cache as MQ topic(file/url)
 	ht := http.Client{}
 	r, _ := ht.Get("http://mirror.vpsnet.com/centos/7/isos/x86_64/CentOS-7-x86_64-DVD-1708.iso")
 	go func() {
@@ -23,6 +25,7 @@ func main() {
 	}()
 
 	http.HandleFunc("/out.iso", func(w http.ResponseWriter, r *http.Request) {
+		//TODO: copy headers
 		t.WriteTo(w)
 	})
 
