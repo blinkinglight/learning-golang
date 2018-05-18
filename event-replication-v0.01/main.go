@@ -6,6 +6,9 @@ package main
 
 */
 
+// TODO: master of masters list to replicate from random alive if master dies
+// TODO: fix replication then restart in the middle of replication restart again and again....
+
 import (
 	"bytes"
 	"encoding/binary"
@@ -24,6 +27,17 @@ import (
 type BinLog struct {
 	MsgID   int64
 	MsgData string
+
+	MsgCat  int64
+	MsgProc string
+}
+
+func (bl *BinLog) encode() []byte {
+	b, _ := json.Marshal(bl)
+	return b
+}
+func (bl *BinLog) decode(v []byte) {
+	json.Unmarshal(v, bl)
 }
 
 var pmq *nats.Conn
@@ -104,12 +118,6 @@ func main() {
 	println("me: " + masterTopic)
 
 	pmq.Subscribe("play-"+masterTopic, func(msg *nats.Msg) {
-		if firstMsg == false {
-			var m BinLog
-			json.Unmarshal(msg.Data, &m)
-			gtid = itob(m.MsgID)
-			firstMsg = true
-		}
 		// process message here
 		// write to db or do your async action
 		// download missing file or do something else with message
@@ -199,6 +207,7 @@ func main() {
 		}
 	}()
 
+	// just for testing
 	go func() {
 		for {
 			publish("Your binlog message")
@@ -210,42 +219,61 @@ func main() {
 }
 
 func publish(msg string) {
-	m := BinLog{time.Now().UnixNano(), msg}
-	b, _ := json.Marshal(m)
+	m := BinLog{time.Now().UnixNano(), msg, 0, ""}
 
-	pmq.Publish(masterTopic, b)
+	pmq.Publish(masterTopic, m.encode())
 }
 
 func binlogWritter(msg *nats.Msg) {
 
-	pmq.Publish("play-"+masterTopic, msg.Data)
-
 	var m BinLog
+	m.decode(msg.Data)
 
-	json.Unmarshal(msg.Data, &m)
+	if firstMsg == false {
+		gtid = itob(m.MsgID)
+		firstMsg = true
+	}
 
-	// fmt.Printf("%v\n", m)
-
-	db.Update(func(tx *bolt.Tx) error {
+	err := db.Update(func(tx *bolt.Tx) error {
 		b, _ := tx.CreateBucketIfNotExists([]byte("binlog"))
-		b.Put(itob(m.MsgID), msg.Data)
-
-		return nil
+		return b.Put(itob(m.MsgID), msg.Data)
 	})
-
+	if err != nil {
+		fmt.Printf("binlog-writter error: %v\n", err)
+		return
+	}
+	pmq.Publish("play-"+masterTopic, msg.Data)
 }
 
 func binlogWritter2(msg *nats.Msg) {
 
 	var m BinLog
+	m.decode(msg.Data)
 
-	json.Unmarshal(msg.Data, &m)
+	db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("m"))
+		return b.Put([]byte("lastMsg"), msg.Data)
+	})
+
+	err := db.Update(func(tx *bolt.Tx) error {
+		b, _ := tx.CreateBucketIfNotExists([]byte("binlog"))
+		return b.Put(itob(m.MsgID), msg.Data)
+	})
+	if err != nil {
+		fmt.Printf("binlog-writter error: %v\n", err)
+		return
+	}
+
 	lastMSG = fmt.Sprintf("%s", msg.Data)
 
 	if bytes.Compare(gtid, itob(m.MsgID)) > 0 {
 		replicationState = true
 		replicationFinished = false
 		lastReplEvent = time.Now().UnixNano()
+		db.Update(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte("m"))
+			return b.Delete([]byte("lastMsg"))
+		})
 		pmq.Publish("play-"+masterTopic, msg.Data)
 	}
 	if bytes.Compare(gtid, itob(m.MsgID)) == 0 {
@@ -253,12 +281,6 @@ func binlogWritter2(msg *nats.Msg) {
 		replicationFinished = true
 	}
 	// fmt.Printf("syncing %v\n", m)
-
-	db.Update(func(tx *bolt.Tx) error {
-		b, _ := tx.CreateBucketIfNotExists([]byte("binlog"))
-		b.Put(itob(m.MsgID), msg.Data)
-		return nil
-	})
 
 }
 
