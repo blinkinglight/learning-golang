@@ -1,17 +1,9 @@
 package main
 
-/*
-	go run main.go -d db1.db -ns nats://192.168.100.50
-	use "publish(string) method to binlog your message or write your own"
-	use play(int64,int64) to play binlog from time to time
-
-*/
-
-// TODO: master of masters list to replicate from random alive if master dies
-// TODO: fix replication then restart in the middle of replication restart again and again....
+// TODO: queue downtimes
 
 import (
-	"bytes"
+	// "bytes"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
@@ -50,6 +42,10 @@ var masterOfMasters string
 
 var dbFile = flag.String("d", "a.db", "-d a.db")
 var natsServer = flag.String("ns", "nats://127.0.0.1:4222", "-ns nats://127.0.0.1:4222,nats://127.0.0.2:4222")
+
+var serviceID = flag.Int64("service-id", 0, "--service-id [0-99]")
+var isMaster = flag.Bool("master", false, "--master")
+
 var gtid []byte
 
 var replicationFinished bool = false
@@ -62,11 +58,11 @@ func init() {
 	gtid = itob(time.Now().UnixNano())
 }
 
+var resyncCh chan struct{} = make(chan struct{})
+
 var db *bolt.DB
 var lastID string
 var lastMSG string
-
-var masterq []string
 
 func main() {
 
@@ -98,7 +94,6 @@ func main() {
 	db.Update(func(tx *bolt.Tx) error {
 		bb := tx.Bucket([]byte("m"))
 		mt := bb.Get([]byte("masterTopic"))
-		fmt.Printf("doh: %s\n", mt)
 		if mt == nil {
 			masterTopic = nuid.New().Next()
 			bb.Put([]byte("masterTopic"), []byte(masterTopic))
@@ -120,13 +115,89 @@ func main() {
 
 	println("me: " + masterTopic)
 
+	go func() {
+		var m BinLog
+		m.decode([]byte(lastID))
+		<-resyncCh
+		if mr.Len() > 0 {
+			go playLog(time.Now().UnixNano(), m.MsgID, func() {
+				fmt.Println("Sync Done")
+				// remove from downtimes queue
+			})
+			return
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-time.After(5 * time.Second):
+				// do something?
+			case <-resyncCh:
+				fmt.Println("Master found !")
+				return
+			}
+		}
+	}()
+
+	pmq.Subscribe("new-master", func(msg *nats.Msg) {
+		data := string(msg.Data)
+		if !mr2.Check(data) {
+			mr2.Register(data)
+			pmq.Subscribe(data, binlogWritter)
+		}
+		// if not me
+		if string(msg.Data) != masterTopic {
+			pmq.Publish("master-"+string(msg.Data), []byte(masterTopic))
+		}
+	})
+
+	pmq.Subscribe("master-"+masterTopic, func(msg *nats.Msg) {
+		masterOfMasters = string(msg.Data)
+		if masterOfMasters == masterTopic {
+			return
+		}
+		if !mr.Check(masterOfMasters) {
+			mr.Register(masterOfMasters)
+			pmq.Subscribe(string(msg.Data), binlogWritter)
+			if *isMaster {
+				pmq.Publish("master-"+string(msg.Data), []byte(masterTopic))
+			}
+		}
+
+		if !chClosed(resyncCh) {
+			close(resyncCh)
+		}
+	})
+
+	pmq.Subscribe("slave-"+masterTopic, func(msg *nats.Msg) {
+
+	})
+
+	pmq.Subscribe("new-slave", func(msg *nats.Msg) {
+		if string(msg.Data) != masterTopic {
+			pmq.Publish("slave-"+string(msg.Data), []byte(masterTopic))
+			pmq.Publish("master-"+string(msg.Data), []byte(masterTopic))
+		}
+	})
+
 	pmq.Subscribe("play-"+masterTopic, func(msg *nats.Msg) {
 		// process message here
 		// write to db or do your async action
 		// download missing file or do something else with message
 
 		// json unmarsh gtid <= msg.id { done }
-		println("playing: " + string(msg.Data))
+		// println("playing: " + string(msg.Data))
+
+	})
+
+	pmq.Subscribe("play2-"+masterTopic, func(msg *nats.Msg) {
+		// process message here
+		// write to db or do your async action
+		// download missing file or do something else with message
+
+		// json unmarsh gtid <= msg.id { done }
+		println("replaying: " + string(msg.Data))
 
 	})
 
@@ -136,122 +207,157 @@ func main() {
 		var m BinLog
 		json.Unmarshal([]byte(args[1]), &m)
 
-		// fmt.Printf("requested reply: %s\n", args)
+		repl := fmt.Sprintf("replay-%s", args[0])
 
-		db.View(func(tx *bolt.Tx) error {
-			b := tx.Bucket([]byte("binlog"))
-			c := b.Cursor()
-			for k, v := c.Seek(itob(m.MsgID)); k != nil; k, v = c.Next() {
-				// time.Sleep(time.Second)
-				pmq.Publish("replay-"+args[0], v)
-			}
-			return nil
-		})
+		var mm BinLog
+		mm.MsgID = -1
+
+		ms := binlogNext(m.MsgID)
+
+		if ms != nil {
+			pmq.Publish(repl, ms)
+		} else {
+			pmq.Publish(repl, mm.encode())
+		}
 	})
 
 	// write to binlog and process if need'ed
-	pmq.Subscribe("replay-"+masterTopic, binlogWritter2)
 
-	pmq.Subscribe("master-"+masterTopic, func(msg *nats.Msg) {
-		masterOfMasters = string(msg.Data)
-		pmq.Subscribe(string(msg.Data), binlogWritter)
-	})
-
-	pmq.Subscribe("new-master", func(msg *nats.Msg) {
-		// println("new-master")
-		pmq.Subscribe(string(msg.Data), binlogWritter)
-		// if not me
-		if string(msg.Data) != masterTopic {
-			// TODO: ir repl enqueue msg
-			if replicationState == true {
-				masterq = append(masterq, "master-"+string(msg.Data))
-			} else {
-				pmq.Publish("master-"+string(msg.Data), []byte(masterTopic))
-			}
-		}
-	})
-
-	pmq.Publish("new-master", []byte(masterTopic))
-	go func() {
-		time.Sleep(time.Second)
-		if masterOfMasters != "" {
-			// println("request replay from: replay-" + masterOfMasters)
-			msg := fmt.Sprintf("%s %s", masterTopic, lastID)
-			pmq.Publish("replay-request-"+masterOfMasters, []byte(msg))
-		}
-	}()
-
-	go func() {
-		for {
-			time.Sleep(time.Second)
-			if time.Duration(time.Now().UnixNano()-lastReplEvent)/time.Second > 3 && replicationFinished == false {
-				if lastMSG == "" {
-					replicationFinished = true
-				}
-
-				if replicationFinished == false {
-					msg := fmt.Sprintf("%s %s", masterTopic, lastMSG)
-					lastReplEvent = time.Now().UnixNano()
-					// println("request replay again from: replay-" + masterOfMasters)
-					pmq.Publish("replay-request-"+masterOfMasters, []byte(msg))
-				}
-
-			}
-			if replicationFinished == true {
-				// if replicationFinished == true {
-				replicationState = false
-				for _, v := range masterq {
-					pmq.Publish(v, []byte(masterTopic))
-				}
-				masterq = nil
-				return
-				// }
-			}
-		}
-	}()
+	if *isMaster {
+		pmq.Publish("new-master", []byte(masterTopic))
+	} else {
+		pmq.Publish("new-slave", []byte(masterTopic))
+	}
 
 	// just for testing
-	go func() {
-		for {
-			publish("Your binlog message")
-			time.Sleep(1000 * time.Millisecond)
-		}
-	}()
-
-	// just for testing
-	go func() {
-		time.Sleep(5 * time.Second)
-		start := time.Now().UnixNano() - int64(10*time.Second)
-		end := time.Now().UnixNano()
-		ch := play(start, end)
-		for v := range ch {
-			fmt.Printf("manual play: %s\n", v)
-		}
-	}()
+	if *isMaster {
+		go func() {
+			for {
+				publish("Your binlog message")
+				time.Sleep(1000 * time.Millisecond)
+			}
+		}()
+	}
 
 	runtime.Goexit()
 }
 
 func publish(msg string) {
-	m := BinLog{time.Now().UnixNano(), msg, 0, 0, ""}
+	id := time.Now().UnixNano()
+	id = id - (id % 100) + *serviceID
+	m := BinLog{id, msg, 0, 0, ""}
 
 	pmq.Publish(masterTopic, m.encode())
 }
 
-func play(from, to int64) chan []byte {
-	ch := make(chan []byte)
+func request(topic string, msg BinLog) {
+	ms := fmt.Sprintf("%s %s", topic, msg.encode())
+	pmq.Publish("replay-request-"+mr.Current(), []byte(ms))
+}
+
+func play(from, to int64, onMessage func(msg []byte), onDone func()) {
+	<-resyncCh
+	playAny(from, to, onMessage, onDone)
+}
+func playAny(from, to int64, onMessage func(msg []byte), onDone func()) {
+	chName := nuid.New().Next()
+
+	var m BinLog
+
+	ch := make(chan struct{})
+
+	timer := time.NewTimer(1 * time.Second)
+
+	var ns *nats.Subscription
+	ns, _ = pmq.Subscribe("replay-"+chName, func(msg *nats.Msg) {
+		m.decode(msg.Data)
+
+		timer.Reset(1 * time.Second)
+
+		if m.MsgID != -1 {
+			onMessage([]byte(m.MsgData))
+		}
+
+		if from >= m.MsgID {
+			request(chName, m)
+		}
+
+		if from <= m.MsgID || m.MsgID == -1 {
+			ns.Unsubscribe()
+			close(ch)
+			go func() {
+				onDone()
+			}()
+		}
+	})
+	m.MsgID = to
+	request(chName, m)
+
 	go func() {
-		db.View(func(tx *bolt.Tx) error {
-			b := tx.Bucket([]byte("binlog"))
-			c := b.Cursor()
-			for k, v := c.Seek(itob(from)); k != nil && bytes.Compare(k, itob(to)) < 0; k, v = c.Next() {
-				ch <- v
+		for {
+			select {
+			case <-timer.C:
+				timer.Reset(1 * time.Second)
+				mr.Next()
+				request(chName, m)
+			case <-ch:
+				timer.Stop()
+				return
 			}
-			return nil
-		})
-		close(ch)
+		}
 	}()
-	return ch
+}
+
+func playLog(from, to int64, onDone func()) {
+	var m BinLog
+
+	ch := make(chan struct{})
+
+	timer := time.NewTimer(1 * time.Second)
+
+	var ns *nats.Subscription
+	ns, _ = pmq.Subscribe("replay-"+masterTopic, func(msg *nats.Msg) {
+		m.decode(msg.Data)
+
+		timer.Reset(1 * time.Second)
+
+		if m.MsgID != -1 {
+			err := db.Update(func(tx *bolt.Tx) error {
+				b, _ := tx.CreateBucketIfNotExists([]byte("binlog"))
+				return b.Put(itob(m.MsgID), msg.Data)
+			})
+			if err != nil {
+				fmt.Printf("binlog-writter error: %v\n", err)
+				return
+			}
+			pmq.Publish("play2-"+masterTopic, []byte(m.MsgData))
+		}
+
+		if from >= m.MsgID {
+			request(masterTopic, m)
+		}
+
+		if from <= m.MsgID || m.MsgID == -1 {
+			ns.Unsubscribe()
+			close(ch)
+			go onDone()
+		}
+	})
+	m.MsgID = to
+	request(masterTopic, m)
+	go func() {
+		for {
+			select {
+			case <-timer.C:
+				timer.Reset(1 * time.Second)
+				mr.Next()
+				request(masterTopic, m)
+			case <-ch:
+				timer.Stop()
+				return
+			}
+		}
+	}()
 }
 
 func binlogWritter(msg *nats.Msg) {
@@ -275,47 +381,75 @@ func binlogWritter(msg *nats.Msg) {
 	pmq.Publish("play-"+masterTopic, msg.Data)
 }
 
-func binlogWritter2(msg *nats.Msg) {
-
-	var m BinLog
-	m.decode(msg.Data)
-
-	db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("m"))
-		return b.Put([]byte("lastMsg"), msg.Data)
+func binlogNext(start int64) []byte {
+	var rt []byte
+	db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("binlog"))
+		c := b.Cursor()
+		c.Seek(itob(start))
+		_, rt = c.Next()
+		return nil
 	})
-
-	err := db.Update(func(tx *bolt.Tx) error {
-		b, _ := tx.CreateBucketIfNotExists([]byte("binlog"))
-		return b.Put(itob(m.MsgID), msg.Data)
-	})
-	if err != nil {
-		fmt.Printf("binlog-writter error: %v\n", err)
-		return
-	}
-
-	lastMSG = fmt.Sprintf("%s", msg.Data)
-
-	if bytes.Compare(gtid, itob(m.MsgID)) > 0 {
-		replicationState = true
-		replicationFinished = false
-		lastReplEvent = time.Now().UnixNano()
-		db.Update(func(tx *bolt.Tx) error {
-			b := tx.Bucket([]byte("m"))
-			return b.Delete([]byte("lastMsg"))
-		})
-		pmq.Publish("play-"+masterTopic, msg.Data)
-	}
-	if bytes.Compare(gtid, itob(m.MsgID)) == 0 {
-		replicationState = false
-		replicationFinished = true
-	}
-	// fmt.Printf("syncing %v\n", m)
-
+	return rt
 }
 
 func itob(v int64) []byte {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, uint64(v))
 	return b
+}
+
+func chClosed(ch chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+	}
+	return false
+}
+
+func NewMR() *MR {
+	mr := new(MR)
+	return mr
+}
+
+var mr *MR = NewMR()
+var mr2 *MR = NewMR()
+
+type MR struct {
+	names []string
+	cur   int
+}
+
+func (mr *MR) Len() int {
+	return len(mr.names)
+}
+
+func (mr *MR) Next() {
+	mr.cur++
+	if mr.cur > len(mr.names)-1 {
+		mr.cur = 0
+	}
+}
+
+func (mr *MR) Current() string {
+	if len(mr.names) == 0 {
+		return masterTopic
+	}
+	return mr.names[mr.cur]
+}
+
+func (mr *MR) Check(name string) bool {
+	for _, m := range mr.names {
+		if m == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (mr *MR) Register(name string) {
+	if !mr.Check(name) {
+		mr.names = append(mr.names, name)
+	}
 }
