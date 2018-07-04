@@ -10,7 +10,7 @@ id = id - (id % 100 ) + shardN[0..99]
 
 store(id, blob)
 
-play(id, id)
+play(id, id, func(msg []byte) {})
 
 playAndSubscribe(id, func(msg []byte) {})
 
