@@ -203,12 +203,18 @@ func main() {
 	var needCounter int64
 	var doneCounter int64
 
+	var smast = NewMR()
+
 	go func() {
 		for {
 			master := <-startSync
+			if smast.Check(master) {
+				continue
+			}
+			smast.Register(master)
+			_ = master
 			go func() {
-				needCounter = int64(dr.Count()*mr.KnownMastersCount() - 1)
-				_ = master
+				needCounter = int64(dr.Count() * (mr.KnownMastersCount() - 1))
 
 				dr.Sync(func(id, v []byte) {
 					master := master
@@ -217,10 +223,12 @@ func main() {
 					hi.decode(v)
 
 					playLog(master, hi.Now, hi.Start, func() {
-						// doneCounter++
 						atomic.AddInt64(&doneCounter, 1)
 						cond.Broadcast()
 					}, func() {
+						atomic.AddInt64(&doneCounter, 1)
+						cond.Broadcast()
+						fmt.Printf("no messages found on %s for (from %d to %d)", master, hi.Start, hi.Now)
 					})
 				})
 			}()
@@ -294,13 +302,6 @@ func main() {
 			}
 			if *isMaster {
 				pmq.Publish("master-repl-"+masterOfMasters[0], []byte(masterTopic+" "+fmt.Sprintf("%v", inSync)))
-			}
-
-			if masterOfMasters[1] == "true" {
-				if sm.Set(masterOfMasters[1]) {
-					inSync = true
-					OnFoundSynced()
-				}
 			}
 		}
 	})
@@ -613,7 +614,7 @@ func binlogWritter(msg *nats.Msg) {
 		return
 	}
 
-	OnEvent(msg.Data)
+	OnEvent(clone(msg.Data))
 }
 
 func binlogNext(start int64) []byte {
