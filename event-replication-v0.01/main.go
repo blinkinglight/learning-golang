@@ -3,7 +3,6 @@ package main
 // TODO: queue downtimes
 
 import (
-	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
@@ -11,6 +10,8 @@ import (
 	"github.com/boltdb/bolt"
 	"sync"
 	// gnatsd "github.com/nats-io/gnatsd/server"
+	"bitbucket.org/mindaugas_z/go-deq"
+	"bitbucket.org/mindaugas_z/go-toe"
 	"github.com/nats-io/go-nats"
 	"github.com/nats-io/nuid"
 	"runtime"
@@ -132,7 +133,6 @@ func OnFoundSynced() {
 	// startApp()
 }
 
-/*
 func startApp() {
 	go func() {
 		from := time.Now().UnixNano() - int64(90*time.Second)
@@ -141,7 +141,6 @@ func startApp() {
 		})
 	}()
 }
-*/
 
 func namespace(s string) string {
 	namespace := "default"
@@ -228,7 +227,7 @@ func main() {
 					}, func() {
 						atomic.AddInt64(&doneCounter, 1)
 						cond.Broadcast()
-						fmt.Printf("no messages found on %s for (from %d to %d)", master, hi.Start, hi.Now)
+						fmt.Printf("no messages found on %s for (from %d to %d)\n", master, hi.Start, hi.Now)
 					})
 				})
 			}()
@@ -438,7 +437,8 @@ func playAny(from, to int64, onMessage func(msg []byte), onDone func()) {
 }
 
 func PlayAndSub(to int64, onMessage func(msg []byte)) {
-	from := int64(1<<63 - 1)
+
+	from := time.Now().UnixNano()
 	chName := nuid.New().Next()
 
 	var m BinLog
@@ -447,28 +447,48 @@ func PlayAndSub(to int64, onMessage func(msg []byte)) {
 
 	timer := time.NewTimer(1 * time.Second)
 
+	que := deq.New()
+
+	que.Subscribe(func(item deq.Item) {
+		onMessage(item.([]byte))
+	})
+
+	var fmsg BinLog
+
+	vtoe := toe.New(1*time.Second, func(t bool) {
+		if !t {
+			from = fmsg.MsgID
+		}
+	})
+
+	pmq.Subscribe("broadcast", func(msg *nats.Msg) {
+		if fmsg.MsgID == 0 {
+			fmsg.decode(msg.Data)
+			vtoe.Event()
+		}
+		que.WriteSecondary(msg.Data)
+	})
+
+	vtoe.Wait()
+
 	var ns *nats.Subscription
 	ns, _ = pmq.Subscribe("replay-"+chName, func(msg *nats.Msg) {
 		m.decode(msg.Data)
 		timer.Reset(1 * time.Second)
 
-		if m.MsgID != -1 {
-			onMessage([]byte(m.MsgData))
+		if from <= m.MsgID || m.MsgID == -1 {
+			ns.Unsubscribe()
+			close(ch)
+			que.Switch()
+			return
 		}
 
 		if from >= m.MsgID {
 			request(chName, m)
 		}
 
-		if from <= m.MsgID || m.MsgID == -1 {
-			globalLock.Lock()
-			if bytes.Compare(lastMSG, msg.Data) == 0 || m.MsgID == -1 {
-				cbs.Add(onMessage)
-			}
-			globalLock.Unlock()
-
-			ns.Unsubscribe()
-			close(ch)
+		if m.MsgID != -1 {
+			que.WritePrimary(msg.Data)
 		}
 	})
 	m.MsgID = to
