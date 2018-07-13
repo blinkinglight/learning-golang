@@ -8,17 +8,24 @@ import (
 func main() {
 	ch := make(chan func(string), 100)
 
-	go func() {
+	fn := func(payload string) {
 		for {
 			select {
 			case fn := <-ch:
-				fn("payload")
+				fn(payload)
 				continue
 			default:
-				println("sleeping / break")
-				time.Sleep(1 * time.Second)
+				break
 			}
+		}
+	}
+	go func() {
+		for {
+			// msg := <-ch
+			fn("payload")
 
+			// do other things
+			time.Sleep(1 * time.Second)
 		}
 	}()
 
